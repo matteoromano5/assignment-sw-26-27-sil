@@ -233,6 +233,101 @@ void test_ebs_brake_request(TestContext& context) {
   system.stop();
 }
 
+void test_ebs_invalid_pressure(TestContext& context) {
+  SilSystem system;
+  configure_nominal_inputs(system);
+  system.start();
+
+  system.send_frame(vehicle_status(false, true, 0U));
+  system.send_frame(brake_pressure(40U, 40U, 5U, 8U));
+  system.send_frame(ebs_command(false, false));
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(80));
+
+  context.expect(system.output(OutputId::EbsAsNodeClosed) == 0U,
+                 "EBS opens ASNode with invalid pneumatic pressure");
+
+  context.expect(system.output(OutputId::EbsValve1Engaged) == 1U &&
+                     system.output(OutputId::EbsValve2Engaged) == 1U,
+                 "EBS engages both valves with invalid pneumatic pressure");
+
+  context.expect(system.output(OutputId::EbsFaultCode) != 0U,
+                 "EBS reports a pressure fault");
+
+  system.stop();
+}
+
+void test_ebs_watchdog_fault(TestContext& context) {
+  SilSystem system;
+  configure_nominal_inputs(system);
+  system.start();
+
+  system.send_frame(vehicle_status(false, true, 0U));
+  system.send_frame(brake_pressure(40U, 40U, 8U, 8U));
+  system.send_frame(ebs_command(false, false));
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(80));
+
+  context.expect(system.output(OutputId::EbsAsNodeClosed) == 1U,
+                 "EBS is nominal before watchdog fault");
+
+  system.set_sensor(SensorId::EbsWatchdogHealthy, 0U);
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(80));
+
+  context.expect(system.output(OutputId::EbsAsNodeClosed) == 0U,
+                 "EBS opens ASNode after watchdog fault");
+
+  context.expect(system.output(OutputId::EbsValve1Engaged) == 1U &&
+                     system.output(OutputId::EbsValve2Engaged) == 1U,
+                 "EBS engages both valves after watchdog fault");
+
+  context.expect(system.output(OutputId::EbsFaultCode) != 0U,
+                 "EBS reports a watchdog fault");
+
+  system.stop();
+}
+
+void test_smu_periodic_frames(TestContext& context) {
+  SilSystem system;
+  configure_nominal_inputs(system);
+  system.start();
+
+  Frame first{};
+  Frame second{};
+
+  const bool first_received =
+      wait_for_frame(system, raceup::sil::can_id::SmuSense, first);
+
+  const bool second_received =
+      wait_for_frame(system, raceup::sil::can_id::SmuSense, second);
+
+  context.expect(first_received,
+                 "SMU emits the first periodic sense frame");
+  context.expect(second_received,
+                 "SMU continues emitting periodic sense frames");
+
+  system.stop();
+}
+
+void test_receive_frame_timeout(TestContext& context) {
+  SilSystem system;
+  Frame frame{};
+
+  const auto start = std::chrono::steady_clock::now();
+
+  const bool received =
+      system.receive_frame(frame, std::chrono::milliseconds(50));
+
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+
+  context.expect(!received,
+                 "receive_frame returns false when no frame is available");
+
+  context.expect(elapsed < std::chrono::milliseconds(200),
+                 "receive_frame respects the timeout without hanging");
+}
+
 }  // namespace
 
 int main() {
@@ -243,6 +338,10 @@ int main() {
   test_ebs_nominal_and_stale_input(context);
   test_ebs_requires_ready_to_drive(context);
   test_ebs_brake_request(context);
+  test_ebs_invalid_pressure(context);
+  test_ebs_watchdog_fault(context);
+  test_smu_periodic_frames(context);
+  test_receive_frame_timeout(context);  
 
   if (context.failures != 0) {
     std::printf("%d test assertion(s) failed\n", context.failures);
