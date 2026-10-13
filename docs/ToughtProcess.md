@@ -44,21 +44,44 @@ The condition variable is notified only after a frame has been inserted into
 the emitted queue and after releasing the mutex, avoiding unnecessary
 contention when the waiting thread wakes up.
 
-## Test extensions
+## Test approach
 
-I extended the provided test suite with additional black-box tests covering:
+I extended the provided test suite with additional black-box tests covering
+the safety and infrastructure requirements that were not already explicitly
+covered.
 
-- invalid EBS pneumatic pressure;
-- a watchdog fault injected while the SIL is running;
-- periodic SMU frame emission;
-- `receive_frame()` timeout behavior.
+The additional tests cover:
 
-The added tests focus only on observable behavior through the public
-`SilSystem` interface rather than depending on private implementation details.
+- invalid EBS pneumatic pressure and the resulting safe state;
+- watchdog failure injected while the SIL is already running;
+- ASMS becoming inactive while the SIL is running;
+- loss of valve power while the SIL is running;
+- missing critical EBS input frames;
+- periodically refreshed EBS inputs remaining valid beyond the stale timeout;
+- the finished-mission condition causing the EBS to enter the safe state;
+- APP plausibility disagreement in the SMU;
+- periodic `SMU_SENSE` frame emission;
+- correct contents of the `EBS_STATUS` frame;
+- timeout behavior of `receive_frame()`.
 
-In particular, the watchdog test verifies a live transition from the nominal
-state to the safe state after changing a sensor while both ECU threads are
-already running.
+The tests interact only through the public `SilSystem` interface and verify
+observable behavior rather than private ECU state.
+
+Runtime fault tests first establish a nominal condition and then modify a
+sensor value or inject a new frame while both ECU threads are already running.
+This allows the tests to verify the resulting state transition instead of only
+checking static initial conditions.
+
+The test file is organized by responsibility: common helpers and test
+utilities first, followed by lifecycle/infrastructure tests, SMU tests, EBS
+communication tests, EBS safety tests, and finally frame-output tests.
+
+This organization was chosen to keep the suite easy to navigate and to make
+the relationship between each test and the corresponding system requirement
+clear. The tests were kept in a single source file, matching the small scope of the
+assignment. They are grouped logically instead of being split into multiple
+files, avoiding unnecessary test infrastructure while keeping the suite
+readable.
 
 ## CI
 
