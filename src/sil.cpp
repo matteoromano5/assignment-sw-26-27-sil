@@ -101,66 +101,90 @@ void SilSystem::stop() {
 bool SilSystem::running() const { return impl_->running.load(); }
 
 void SilSystem::set_sensor(const SensorId id, const std::uint16_t value) {
-  // TODO(candidate): protect state.sensors with state.mutex and store value.
-  // SensorId::Count is not a valid sensor and does not need to be accepted.
-  (void)id;
-  (void)value;
+  std::lock_guard<std::mutex> lock(impl_->state.mutex);
+  impl_->state.sensors[sensor_index(id)] = value;
 }
 
 std::uint16_t SilSystem::output(const OutputId id) const {
-  // TODO(candidate): protect state.outputs with state.mutex and return the
-  // requested value.
-  (void)id;
-  return 0U;
+  std::lock_guard<std::mutex> lock(impl_->state.mutex);
+  return impl_->state.outputs[output_index(id)];
 }
 
 void SilSystem::send_frame(const Frame& frame) {
-  // TODO(candidate): protect state.ebs_input with state.mutex and enqueue the
-  // frame. If the queue reaches kQueueCapacity, discard the oldest input
-  // before adding the new one.
-  (void)frame;
+  std::lock_guard<std::mutex> lock(impl_->state.mutex);
+
+  if (impl_->state.ebs_input.size() >= kQueueCapacity) {
+    impl_->state.ebs_input.pop_front();
+  }
+
+  impl_->state.ebs_input.push_back(frame);
 }
 
 bool SilSystem::receive_frame(Frame& frame,
                               const std::chrono::milliseconds timeout) {
-  // TODO(candidate): acquire state.mutex with a std::unique_lock and wait on
-  // state.emitted_available until state.emitted is non-empty or timeout
-  // expires. On success, move the oldest frame to frame.
-  (void)frame;
-  (void)timeout;
-  return false;
+  std::unique_lock<std::mutex> lock(impl_->state.mutex);
+
+  const bool available = impl_->state.emitted_available.wait_for(
+      lock,
+      timeout,
+      [this] {
+        return !impl_->state.emitted.empty();
+      });
+
+  if (!available) {
+    return false;
+  }
+
+  frame = impl_->state.emitted.front();
+  impl_->state.emitted.pop_front();
+  return true;
 }
 
 std::uint16_t SilSystem::read_sensor(const SensorId id) const {
-  // TODO(candidate): protect state.sensors with state.mutex and return the
-  // requested value.
-  (void)id;
-  return 0U;
+  std::lock_guard<std::mutex> lock(impl_->state.mutex);
+  return impl_->state.sensors[sensor_index(id)];
 }
 
 bool SilSystem::try_read(const Ecu ecu, Frame& frame) {
-  // TODO(candidate): protect state.ebs_input with state.mutex. Only Ecu::Ebs
-  // has an input queue in this exercise. If it is empty, return false;
-  // otherwise pop its oldest frame.
-  (void)ecu;
-  (void)frame;
-  return false;
+  if (ecu != Ecu::Ebs) {
+    return false;
+  }
+
+  std::lock_guard<std::mutex> lock(impl_->state.mutex);
+
+  if (impl_->state.ebs_input.empty()) {
+    return false;
+  }
+
+  frame = impl_->state.ebs_input.front();
+  impl_->state.ebs_input.pop_front();
+  return true;
 }
 
 void SilSystem::write(const Ecu ecu, const Frame& frame) {
-  // TODO(candidate): protect both queues with state.mutex. Every ECU frame
-  // goes to state.emitted. A frame written by the SMU must also be copied to
-  // state.ebs_input. Keep both queues bounded by kQueueCapacity, then notify
-  // waiting test code through state.emitted_available.
-  (void)ecu;
-  (void)frame;
+  {
+  std::lock_guard<std::mutex> lock(impl_->state.mutex);
+
+    if (impl_->state.emitted.size() >= kQueueCapacity) {
+      impl_->state.emitted.pop_front();
+    }
+    impl_->state.emitted.push_back(frame);
+
+    if (ecu == Ecu::Smu) {
+      if (impl_->state.ebs_input.size() >= kQueueCapacity) {
+        impl_->state.ebs_input.pop_front();
+      }
+      impl_->state.ebs_input.push_back(frame);
+    }
+  }
+
+  impl_->state.emitted_available.notify_one();
 }
 
 void SilSystem::write_output(const Ecu /*ecu*/, const OutputId id,
                              const std::uint16_t value) {
-  // TODO(candidate): protect state.outputs with state.mutex and store value.
-  (void)id;
-  (void)value;
+  std::lock_guard<std::mutex> lock(impl_->state.mutex);
+  impl_->state.outputs[output_index(id)] = value;
 }
 
 namespace ecu_io {
